@@ -1,6 +1,7 @@
 library(terra)
 library(sf)
 library(dplyr)
+library(data.table)
 
 ######################################################################
 ## Script for preparing the JAGS inputs for each ecoregion          ##
@@ -106,7 +107,15 @@ for (i in 1:2) {#nrow(ecoreg_samples_5km)) {  # UNCOMMENT THIS WHEN STEP 2 IS FU
               cell_id, nrow(dat), nrow(sampled_tuples)))
   
   print(summary(dat[, c('Tavg', 'SWin', 'Pprd', 'PS')]))
+ 
+  # Sort dat to pix_loc > year > DOY
+  dat <- setDT(dat)
+  setorder(dat, px_location, year, doy)
   
+  # Save dat to rda
+  if (!dir.exists(paste0('/projectnb/modislc/users/seamorez/HLS_Pheno/GUP_climate_sensitivity/jags_input/',ecoreg))) {
+    dir.create(paste0('/projectnb/modislc/users/seamorez/HLS_Pheno/GUP_climate_sensitivity/jags_input/',ecoreg), recursive = TRUE)
+  }
+  save(dat, file = paste0('/projectnb/modislc/users/seamorez/HLS_Pheno/GUP_climate_sensitivity/jags_input/',ecoreg,'/',ecoreg,'_',cell_id,'.rda'))
+  #jags_input/[ecoreg]/[ecoreg]_[gridcell].rda 
 }
-
-#jags_input/[ecoreg]/[ecoreg]_[gridcell].rda
