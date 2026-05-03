@@ -4,16 +4,15 @@ library(data.table)
 library(R2jags)
 
 ## C6 one tile multi-year
-args <- commandArgs()
-print(args)
-
+args <- commandArgs(trailingOnly = TRUE)
 # Load the input rda
+tt <- unlist(strsplit(args[1], split = "_"))[1]
+vp <- unlist(strsplit(args[1], split = "_"))[2]
 
-tt <- '2.2.2'
-vp <- '668891'
+cat(sprintf("Ecoregion: %s | Cell ID: %s\n", tt, vp))
 
-tt <- unlist(strsplit(args[3], split = "_"))[1] 
-vp <- unlist(strsplit(args[3], split = "_"))[2] 
+# tt <- '2.2.2'
+# vp <- '668891'
 
 path <- paste('/projectnb/modislc/users/seamorez/HLS_Pheno/GUP_climate_sensitivity/jags_input/',tt,sep='')
 sstr <- paste(tt,'*',vp,'.rda',sep='')
@@ -50,21 +49,21 @@ cat("NAs after gap-filling:", sum(is.na(dat$Tavg)), "\n")
 
 ############################################
 # Replace Tavg with its 7-day moving average
-ma <- function(x, n = 7){stats::filter(x, rep(1 / n, n), sides = 2)}
-stavg <- rep(NA, nrow(dat))
-mint <- 7
-
-for(i in 1:100){
-  ta <- dat$Tavg[(250*(i-1)+1):(250*i)]
-  mta <- ma(ta, mint)
-  mta[1:(mint%/%2)] <- mta[(mint%/%2+1)]
-  mta[(250+1-mint%/%2):250] <- mta[(250-mint%/%2)]
-  stavg[(250*(i-1)+1):(250*i)] <- mta
-}
-
-print(sum(is.na(stavg)))
-
-dat$Tavg <- stavg
+# ma <- function(x, n = 7){stats::filter(x, rep(1 / n, n), sides = 2)}
+# stavg <- rep(NA, nrow(dat))
+# mint <- 7
+# 
+# for(i in 1:100){
+#   ta <- dat$Tavg[(250*(i-1)+1):(250*i)]
+#   mta <- ma(ta, mint)
+#   mta[1:(mint%/%2)] <- mta[(mint%/%2+1)]
+#   mta[(250+1-mint%/%2):250] <- mta[(250-mint%/%2)]
+#   stavg[(250*(i-1)+1):(250*i)] <- mta
+# }
+# 
+# print(sum(is.na(stavg)))
+# 
+# dat$Tavg <- stavg
 ############################################
 # Build design matrix X and binary outcome Y
 # X <- as.matrix(data.table(
@@ -164,6 +163,136 @@ setwd(paste('/projectnb/modislc/users/seamorez/HLS_Pheno/GUP_climate_sensitivity
 save(dat,data,gibbs,file=paste('ma_',tt,'_',vp,'.rda',sep=''))
 
 
+#############################################################################################################################################################################################
+library(data.table)
+library(ggplot2)
+
+n_sims   <- nrow(gibbs$beta)
+np       <- ncol(gibbs$beta)
+pred_names <- colnames(X)   # "intercept", "Tavg", "Pprd", "SWin"
+
+# ── 1. Median development state h across all MCMC samples ─────────────────
+h_med  <- apply(gibbs$h, 2, median)           # length n (all obs)
+h_lo   <- apply(gibbs$h, 2, quantile, 0.025)
+h_hi   <- apply(gibbs$h, 2, quantile, 0.975)
+
+# ── 2. Probability of green-up p  ─────────────────────────────────────────
+# kappa and h are already sampled; compute p from logit link
+kappa_med <- median(gibbs$kappa)
+p_med     <- 1 / (1 + exp(-(kappa_med + data$lambda * h_med)))
+
+# ── 3. Predicted onset (first DOY where yp == 1) per block ────────────────
+yp_med <- apply(gibbs$yp, 2, median)   # 0/1 per observation (median vote)
+
+compare <- data.table(
+  px_locs = dat$px_location,
+  year    = dat$year,
+  doy     = dat$doy,
+  y       = data$Y,
+  yp      = yp_med,
+  p       = p_med,
+  h       = h_med
+)
+
+onset <- compare[, .(
+  onset_obs  = min(c(Inf, doy[y  == 1]), na.rm = TRUE),
+  onset_pred = min(c(Inf, doy[yp == 1]), na.rm = TRUE)
+), by = .(px_locs, year)]
+
+##
+beta_df <- as.data.frame(gibbs$beta)
+colnames(beta_df) <- pred_names
+
+beta_long <- reshape(beta_df,
+                     varying   = pred_names,
+                     v.names   = "value",
+                     timevar   = "predictor",
+                     times     = pred_names,
+                     direction = "long")
+
+ggplot(beta_long, aes(x = value, fill = predictor)) +
+  geom_density(alpha = 0.6) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  facet_wrap(~predictor, scales = "free") +
+  labs(title = "Posterior distributions of climate sensitivity coefficients",
+       x = "Beta value", y = "Density") +
+  theme_bw() + theme(legend.position = "none")
+##
+beta_summary <- data.frame(
+  predictor = pred_names,
+  median    = apply(gibbs$beta, 2, median),
+  lo        = apply(gibbs$beta, 2, quantile, 0.025),
+  hi        = apply(gibbs$beta, 2, quantile, 0.975)
+)
+
+ggplot(beta_summary, aes(x = predictor, y = median)) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = lo, ymax = hi), width = 0.2) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  coord_flip() +
+  labs(title  = "Climate sensitivity: 95% credible intervals",
+       x = NULL, y = "Beta (posterior median + 95% CI)") +
+  theme_bw()
+##
+# Average across all blocks for a "typical year" view
+h_doy <- compare[, .(h_med = median(h),
+                     p_med = median(p)),
+                 by = doy]
+
+par(mfrow = c(2,1), mar = c(4,4,2,1))
+
+# Development state
+plot(h_doy$doy, h_doy$h_med, type = "l", lwd = 2,
+     xlab = "DOY", ylab = "Development state h",
+     main = "Accumulated development state (avg across blocks)")
+abline(h = data$hmax, lty = 2, col = "grey50")
+
+# Probability of green-up
+plot(h_doy$doy, h_doy$p_med, type = "l", lwd = 2,
+     xlab = "DOY", ylab = "P(green-up)",
+     main = "Probability of green-up over season",
+     ylim = c(0,1))
+abline(h = 0.5, lty = 2, col = "red")
+##
+# Remove Inf (blocks where event never occurred in obs or pred)
+onset_clean <- onset[is.finite(onset_obs) & is.finite(onset_pred)]
+
+rmse <- sqrt(mean((onset_clean$onset_obs - onset_clean$onset_pred)^2))
+
+ggplot(onset_clean, aes(x = onset_obs, y = onset_pred, color = factor(year))) +
+  geom_point(size = 2, alpha = 0.7) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  annotate("text", x = min(onset_clean$onset_obs),
+           y = max(onset_clean$onset_pred),
+           label = paste0("RMSE = ", round(rmse, 1), " days"),
+           hjust = 0, fontface = "bold") +
+  labs(title = "Predicted vs. observed green-up DOY",
+       x = "Observed onset (DOY)", y = "Predicted onset (DOY)",
+       color = "Year") +
+  theme_bw()
+##
+# Pick a single px_locs to examine
+px_focus <- unique(dat$px_location)[1]
+
+traj <- compare[px_locs == px_focus]
+
+ggplot(traj, aes(x = doy, y = p, group = year, color = factor(year))) +
+  geom_line(alpha = 0.7) +
+  geom_hline(yintercept = 0.5, linetype = "dashed") +
+  labs(title = paste("Green-up probability trajectories — pixel", px_focus),
+       x = "DOY", y = "P(green-up)", color = "Year") +
+  theme_bw()
+
+## Rsq
+onset_clean <- onset[is.finite(onset_obs) & is.finite(onset_pred)]
+
+ss_res <- sum((onset_clean$onset_obs - onset_clean$onset_pred)^2)
+ss_tot <- sum((onset_clean$onset_obs - mean(onset_clean$onset_obs))^2)
+r2_onset <- 1 - ss_res / ss_tot
+
+cat(sprintf("R² (onset DOY):  %.3f\n", r2_onset))
+cat(sprintf("RMSE (days):     %.1f\n", sqrt(ss_res / nrow(onset_clean))))
+
 # compare <- data.table(year = dat$year,
 #                       id = dat$id,
 #                       yp = apply(model$BUGSoutput$sims.list$yp, 2, median),
@@ -175,7 +304,7 @@ save(dat,data,gibbs,file=paste('ma_',tt,'_',vp,'.rda',sep=''))
 # ## plot
 # layout(matrix(c(1:8,rep(9,8)), nrow = 4))
 # for(i in 1:ncol(gibbs$beta)){
-#   hist(gibbs$beta[,i],main=colnames(X)[i],50)  
+#   hist(gibbs$beta[,i],main=colnames(X)[i],50)
 # }
 # #
 # hh <- apply(gibbs$h,2,median)

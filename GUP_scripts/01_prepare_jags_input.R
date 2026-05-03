@@ -9,7 +9,7 @@ library(data.table)
 
 # 0) Args
 ecoreg <- '2.2.2'
-total_nsamples <- 10000
+total_nsamples <- 15000
 years <- 2001:2024
 Tavg_path <- paste0('/projectnb/modislc/data/climate/CHELSA/arctic/MODIS_gridded/', ecoreg, '/', 'tas_', ecoreg, '_2001.tif')
 SWin_path <- paste0('/projectnb/modislc/data/climate/CHELSA/arctic/MODIS_gridded/', ecoreg, '/', 'rsds_', ecoreg, '_2001.tif')
@@ -30,7 +30,7 @@ ecoreg_samples_5km <- ecoreg_grid_5km %>% slice_sample(n = nsamples)
 
 # 2) For each grid cell, clip LSP, climate rasters to the grid cell, randomly sample 50 MODIS pixel locations in each, and then randomly sample 100 px-yrs from the time series data
 # Sample 50 MODIS pixel locations, using Tavg data as a basemap
-for (i in 1:2) {#nrow(ecoreg_samples_5km)) {  # UNCOMMENT THIS WHEN STEP 2 IS FULLY READY AND OPERATIONAL!
+for (i in 1:nrow(ecoreg_samples_5km)) {  # UNCOMMENT THIS WHEN STEP 2 IS FULLY READY AND OPERATIONAL!
   cell_id <- ecoreg_samples_5km[i, ]$id
   px_locations <- samplePixelsInGrid(Tavg_path, ecoreg_samples_5km[i, ], 50)
   print(px_locations)
@@ -111,6 +111,39 @@ for (i in 1:2) {#nrow(ecoreg_samples_5km)) {  # UNCOMMENT THIS WHEN STEP 2 IS FU
   # Sort dat to pix_loc > year > DOY
   dat <- setDT(dat)
   setorder(dat, px_location, year, doy)
+  
+  # Remove nonsensical values for Tavg and SWin
+  cat(sprintf('  Implausible Tavg values: %d\n', sum(dat$Tavg < 173 | dat$Tavg > 400, na.rm = TRUE)))
+  cat(sprintf('  Implausible SWin values: %d\n', sum(dat$SWin < 0  | dat$SWin > 900, na.rm = TRUE)))
+  dat$Tavg[dat$Tavg < 173 | dat$Tavg > 400]  <- NA
+  dat$SWin[dat$SWin < 0   | dat$SWin > 900] <- NA
+  
+  # ── NA rate check — skip grid cell if any variable exceeds 5% ───────────
+  na_thresh  <- 0.01
+  total_rows <- nrow(dat)
+  
+  na_rates <- c(
+    Tavg = sum(is.na(dat$Tavg)) / total_rows,
+    SWin = sum(is.na(dat$SWin)) / total_rows,
+    Pprd = sum(is.na(dat$Pprd)) / total_rows,
+    PS   = sum(is.na(dat$PS))   / total_rows
+  )
+  
+  cat(sprintf('  NA rates — Tavg: %.2f%%  SWin: %.2f%%  Pprd: %.2f%%  PS: %.2f%%\n',
+              na_rates['Tavg'] * 100,
+              na_rates['SWin'] * 100,
+              na_rates['Pprd'] * 100,
+              na_rates['PS']   * 100))
+  
+  if (any(na_rates >= na_thresh)) {
+    cat(sprintf('  Grid cell %d: NA rate exceeds %.0f%% in [%s] — skipping\n',
+                cell_id,
+                na_thresh * 100,
+                paste(names(na_rates)[na_rates > na_thresh], collapse = ', ')))
+    next
+  }
+  
+  print(summary(dat[, c('Tavg', 'SWin', 'Pprd', 'PS')]))
   
   # Save dat to rda
   if (!dir.exists(paste0('/projectnb/modislc/users/seamorez/HLS_Pheno/GUP_climate_sensitivity/jags_input/',ecoreg))) {
