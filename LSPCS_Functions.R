@@ -31,7 +31,7 @@ samplePixelsInGrid <-function(rastPath, gridCell, numPix) {
   if (length(valid_cells) == 0) return(NULL)
   
   # Sample numPix locations
-  sampled_indices <- sample(overlapping_indices, min(length(overlapping_indices), numPix))
+  sampled_indices <- sample(valid_cells, min(length(valid_cells), numPix))
   
   # # Plotting for verification
   # Create a small buffer so you can see the surroundings
@@ -92,7 +92,7 @@ build_raster_paths <- function(ecoreg, year) {
 #'         Tavg (K) | SWin (W m-2) | Pprd (s) | PS (0/1/NA)
 #---------------------------------------------------------------------
 extract_year_timeseries <- function(ecoreg, grid_cell_id, px_locs, year,
-                                    gup_band = 1) {
+                                    gup_band = 1, gdn_band = 3, do_gdn = FALSE) {
   
   ndoys <- if (is_leap_year(year)) 366L else 365L
   n_pix <- length(px_locs)
@@ -116,6 +116,9 @@ extract_year_timeseries <- function(ecoreg, grid_cell_id, px_locs, year,
   # terra::extract returns data.frame: rows = pixels, cols = bands
   # ID = FALSE drops the auto-generated ID column terra adds by default
   gup_df  <- terra::extract(r_lsp[[gup_band]], px_locs, ID = FALSE)  # n_pix × 1
+  if (do_gdn){
+    gdn_df  <- terra::extract(r_lsp[[gdn_band]], px_locs, ID = FALSE)  # n_pix × 1
+  }
   tavg_df <- terra::extract(r_tavg,            px_locs, ID = FALSE)  # n_pix × ndoys
   swin_df <- terra::extract(r_swin,            px_locs, ID = FALSE)  # n_pix × ndoys
   pprd_df <- terra::extract(r_pprd,            px_locs, ID = FALSE)  # n_pix × ndoys
@@ -126,12 +129,18 @@ extract_year_timeseries <- function(ecoreg, grid_cell_id, px_locs, year,
   # rsds: stored as W m-2 × 10  → divide by 10 to recover W m-2
   # pprd: stored as raw seconds (int32) → no conversion needed
   gup_vec  <- as.integer(gup_df[, 1])       # GUP DOY for each pixel
+  if (do_gdn){
+    gdn_vec  <- as.integer(gdn_df[, 1])       # GDN DOY for each pixel
+  }
   tavg_mat <- as.matrix(tavg_df) / 10       # n_pix × ndoys, Kelvin
   swin_mat <- as.matrix(swin_df) / 10       # n_pix × ndoys, W m-2
   pprd_mat <- as.matrix(pprd_df)            # n_pix × ndoys, seconds
 
   # Mask implausible GUP fill values (e.g. 32767, 0) to NA
   gup_vec[gup_vec < 1 | gup_vec > ndoys] <- NA_integer_
+  if (do_gdn){
+    gdn_vec[gdn_vec < 1 | gdn_vec > ndoys] <- NA_integer_
+  }
   
   # ── Build long-format data.frame (fully vectorised — no loops) ────────────
   #
@@ -145,6 +154,9 @@ extract_year_timeseries <- function(ecoreg, grid_cell_id, px_locs, year,
   px_rep  <- rep(px_locs,          each  = ndoys)
   doy_rep <- rep(seq_len(ndoys),   times = n_pix)
   gup_rep <- rep(gup_vec,          each  = ndoys)  # broadcast GUP across DOYs
+  if (do_gdn){
+    gdn_rep <- rep(gdn_vec,        each  = ndoys)  # broadcast GDN across DOYs
+  }
   
   tavg_vec <- as.vector(t(tavg_mat))
   swin_vec <- as.vector(t(swin_mat))
@@ -155,17 +167,35 @@ extract_year_timeseries <- function(ecoreg, grid_cell_id, px_locs, year,
   #    NA = GUP missing for this pixel in this year
   ps_vec              <- as.integer(doy_rep >= gup_rep)
   ps_vec[is.na(gup_rep)] <- NA_integer_
-  
-  data.frame(
-    ecoregion   = ecoreg,
-    grid_cell   = grid_cell_id,
-    px_location = px_rep,
-    year        = year,
-    doy         = doy_rep,
-    Tavg        = tavg_vec,
-    SWin        = swin_vec,
-    Pprd        = pprd_vec,
-    PS          = ps_vec,
-    stringsAsFactors = FALSE
-  )
+  if (do_gdn){
+    ps2_vec              <- as.integer(doy_rep >= gdn_rep)
+    ps2_vec[is.na(gdn_rep)] <- NA_integer_
+    data.frame(
+      ecoregion   = ecoreg,
+      grid_cell   = grid_cell_id,
+      px_location = px_rep,
+      year        = year,
+      doy         = doy_rep,
+      Tavg        = tavg_vec,
+      SWin        = swin_vec,
+      Pprd        = pprd_vec,
+      GUP         = gup_rep,
+      PS          = ps2_vec,
+      stringsAsFactors = FALSE
+    )
+  }
+  else{
+    data.frame(
+      ecoregion   = ecoreg,
+      grid_cell   = grid_cell_id,
+      px_location = px_rep,
+      year        = year,
+      doy         = doy_rep,
+      Tavg        = tavg_vec,
+      SWin        = swin_vec,
+      Pprd        = pprd_vec,
+      PS          = ps_vec,
+      stringsAsFactors = FALSE
+    )
+  }
 }
