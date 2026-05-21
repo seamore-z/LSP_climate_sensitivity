@@ -31,7 +31,9 @@ ecoreg_proj <- st_transform(
 )
 
 # ── Loop over ecoregions — collect sensitivity results ─────────────────────────
-all_sens_list <- list()
+all_sens_list     <- list()
+scatter_data_list <- list()   # stores pxyr_dt for every 10th successful cell
+scatter_n         <- 0L       # counts successfully processed cells
 
 for (ecoreg in ecoregs) {
 
@@ -134,11 +136,12 @@ for (ecoreg in ecoregs) {
     )
     if (nrow(pxyr_dt) < 5) next
 
-    # ── Compute anomalies (remove each pixel's temporal mean) ─────────────────
-    # This isolates inter-annual variability within each pixel location,
-    # removing the effect of spatial mean differences across pixels in the cell
-    pxyr_dt[, GUP_anom  := doy_onset - mean(doy_onset, na.rm = TRUE), by = px_location]
-    pxyr_dt[, AGDD_anom := AGDD      - mean(AGDD,      na.rm = TRUE), by = px_location]
+    # ── Compute anomalies at the grid-cell level ──────────────────────────────
+    # Treat all pixel-years in the cell as one population: subtract the
+    # cell-wide mean from every observation. This avoids the instability of
+    # per-pixel means when pixels have very few sampled years (~2 on average).
+    pxyr_dt[, GUP_anom  := doy_onset - mean(doy_onset, na.rm = TRUE)]
+    pxyr_dt[, AGDD_anom := AGDD      - mean(AGDD,      na.rm = TRUE)]
 
     # ── Linear regression: GUP_anom ~ AGDD_anom ───────────────────────────────
     # Slope units: days per degree-day (days / [°C·day])
@@ -154,6 +157,21 @@ for (ecoreg in ecoregs) {
       p_val  = sfit$coefficients['AGDD_anom', 'Pr(>|t|)'],
       n_obs  = nrow(pxyr_dt)
     )
+
+    # ── Collect scatter data for every 10th successful cell ────────────────────
+    scatter_n <- scatter_n + 1L
+    if (scatter_n %% 10 == 1) {
+      scatter_data_list[[length(scatter_data_list) + 1]] <- data.frame(
+        pxyr_dt[, .(px_location, year, AGDD, doy_onset, AGDD_anom, GUP_anom)],
+        cell_id     = cell_id,
+        ecoreg      = ecoreg,
+        panel_label = sprintf('Cell %d | %s\nR²=%.3f  β=%.4f  n=%d',
+                              cell_id, ecoreg,
+                              sfit$r.squared,
+                              coef(fit)[['AGDD_anom']],
+                              nrow(pxyr_dt))
+      )
+    }
   }
 
   all_sens_list <- c(all_sens_list, sens_list)
@@ -252,5 +270,52 @@ p_combined <- p_slope + p_rsq +
 
 ggsave(file.path(fig_dir, paste0('AGDD_GUP_sensitivity_', ecoreg_tag, '.png')),
        plot = p_combined, width = 18, height = 8, dpi = 300, bg = 'white')
+
+# ── Diagnostic scatter plots: every 10th cell ─────────────────────────────────
+# Each panel shows the GUP_anom ~ AGDD_anom cloud with the fitted lm line,
+# R², slope, and n labelled in the strip. Use these to visually confirm the
+# relationship and check whether the cell-level anomaly approach is working.
+if (length(scatter_data_list) > 0) {
+  scatter_df <- bind_rows(scatter_data_list)
+
+  # Fix panel order so facets appear in processing sequence
+  scatter_df$panel_label <- factor(scatter_df$panel_label,
+                                   levels = unique(scatter_df$panel_label))
+
+  p_scatter <- ggplot(scatter_df, aes(x = AGDD_anom, y = GUP_anom)) +
+    geom_point(alpha = 0.4, size = 0.9, color = 'steelblue4') +
+    geom_smooth(method = 'lm', se = TRUE, color = 'red3',
+                linewidth = 0.8, fill = 'red3', alpha = 0.15) +
+    geom_hline(yintercept = 0, linetype = 'dashed', linewidth = 0.3, color = 'grey50') +
+    geom_vline(xintercept = 0, linetype = 'dashed', linewidth = 0.3, color = 'grey50') +
+    facet_wrap(~ panel_label, scales = 'free') +
+    labs(
+      x        = 'AGDD anomaly (°C·days)',
+      y        = 'GUP anomaly (days)',
+      title    = 'GUP anomaly vs. preseason AGDD anomaly — sample of grid cells (every 10th)',
+      subtitle = 'Each panel: one grid cell. Points = pixel-years. Anomalies relative to cell-wide mean.'
+    ) +
+    theme_bw(base_size = 9) +
+    theme(
+      strip.text       = element_text(size = 7),
+      strip.background = element_rect(fill = 'grey92'),
+      panel.grid.minor = element_blank(),
+      plot.title       = element_text(face = 'bold', size = 11),
+      plot.subtitle    = element_text(size = 9, color = 'grey40')
+    )
+
+  # Scale figure height to number of panels (4 columns)
+  n_panels   <- length(unique(scatter_df$panel_label))
+  n_rows_fig <- ceiling(n_panels / 4)
+  fig_h      <- max(4, n_rows_fig * 3.2)
+
+  ggsave(file.path(fig_dir, paste0('scatter_GUP_AGDD_sample_', ecoreg_tag, '.png')),
+         plot   = p_scatter,
+         width  = 16,
+         height = fig_h,
+         dpi    = 300,
+         bg     = 'white')
+  cat(sprintf('Scatter diagnostics saved (%d panels).\n', n_panels))
+}
 
 cat('Done. Figures saved to', fig_dir, '\n')
