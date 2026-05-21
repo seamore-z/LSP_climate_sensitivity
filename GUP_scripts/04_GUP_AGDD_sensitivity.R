@@ -7,7 +7,7 @@ library(data.table)
 library(patchwork)
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-ecoregs  <- c('2.1.3','2.1.6','2.2.1','2.2.2','2.2.3','2.2.4','2.3.1','2.4.1','2.4.2','2.4.3','2.4.4')
+ecoregs  <- c('2.1.3','2.1.5','2.1.6','2.1.7','2.2.1','2.2.2','2.2.3','2.2.4','2.3.1','2.4.1','2.4.2','2.4.3','2.4.4')
 grid_shp        <- '/projectnb/modislc/users/seamorez/HLS_Pheno/shapefiles/Arctic_grid_5km.shp'
 ecoreg_shp      <- '/projectnb/modislc/users/seamorez/HLS_Pheno/shapefiles/NAA_ecoregions_final.shp'
 fig_dir         <- '/projectnb/modislc/users/seamorez/HLS_Pheno/GUP_climate_sensitivity/figures'
